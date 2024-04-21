@@ -27,7 +27,9 @@
 #include <errno.h>
 #include <termios.h>
 
-#define QUERY_DELAY	50000	/**< Delay in us between buffer-capacity queries */
+#define BAUD_RATE 1200 // usleep values depend on this baud setting, scale
+#define US_PER_BYTE (1000000*10/8)/BAUD_RATE 
+#define QUERY_DELAY	50*US_PER_BYTE	/**< Delay in us between buffer-capacity queries */
 #define READBUFSIZE	64	/**< Serial read buffer size */
 
 #define DEVCOM_PREFIX	"\x1B."	/**< Device command prefix */
@@ -35,7 +37,7 @@
 #define DEVCOM_SEP	','	/**< Device command separator */
 
 /** Initialises the serial port. */
-int init_serial(const char *device, int baud_rate) {
+int init_serial(const char *device) {
 	int fd;
 	struct termios options;
 
@@ -50,8 +52,8 @@ int init_serial(const char *device, int baud_rate) {
 	/* configure serial port */
 	tcgetattr(fd, &options);
 
-	cfsetispeed(&options, baud_rate);
-	cfsetospeed(&options, baud_rate);
+	cfsetispeed(&options, BAUD_RATE);
+	cfsetospeed(&options, BAUD_RATE);
 
 	options.c_cflag &= ~CSIZE;					/* 8-bits characters */
 	options.c_cflag |=  CS8;
@@ -84,6 +86,10 @@ void serial_write(int fd, const char *s) {
 	if(write(fd, s, len) != len) {
 		fprintf(stderr, "partial write to port: %s\n", strerror(errno));
 	}
+    else{
+        usleep(len*US_PER_BYTE);
+    }
+
 }
 
 /** Read in what the plotter manual calls a DEC field from the plotter.
@@ -146,7 +152,6 @@ int main(int argc, char **argv) {
 	char	*device;
 	char	*filename;
 	int	 verbose;
-	int	 baud_rate;
 
 	/* internal vars */
 	char c;
@@ -159,10 +164,9 @@ int main(int argc, char **argv) {
 	FILE *input;
 
 	/* default options */
-	device		= "/dev/ttyS0";
+	device		= "/dev/ttyUSB0";
 	filename	= NULL;
 	verbose		= 0;
-	baud_rate	= B9600;
 
 	opterr = 0;
 
@@ -218,7 +222,7 @@ int main(int argc, char **argv) {
 	/* open port */
 	if(verbose) fprintf(stderr, "initialising serial port %s\n", device);
 
-	serial_fd = init_serial(device, baud_rate);
+	serial_fd = init_serial(device);
 	if(serial_fd < 0) {
 		if(filename != NULL) fclose(input);
 		return EXIT_FAILURE;
@@ -257,22 +261,31 @@ int main(int argc, char **argv) {
 	 * required space available in its buffer so we can send another
 	 * chunk, etc.
 	 */
+    usleep(QUERY_DELAY);				/* let the plotter process some data */
 	while(!feof(input)) {
 		fbufsize = fread(buffer, 1, chunksize, input);
 
 		buffree = 0;
 		while(buffree <= fbufsize) {
-			usleep(QUERY_DELAY);				/* let the plotter process some data */
+            usleep(QUERY_DELAY);				/* let the plotter process some data */
 			serial_write(serial_fd, DEVCOM_PREFIX "B");	/* query buffer size */
+            usleep(QUERY_DELAY);				/* let the plotter process some data */
 			buffree = read_dec(serial_fd);			/* read in buffer size */
+            usleep(QUERY_DELAY);				/* let the plotter process some data */
+			serial_write(serial_fd, DEVCOM_PREFIX "B");	/* query buffer size */
+            usleep(QUERY_DELAY);				/* let the plotter process some data */
+			buffree = read_dec(serial_fd);			/* read in buffer size */
+            usleep(QUERY_DELAY);				/* let the plotter process some data */
 
 			if(verbose) fprintf(stderr, "%u free\n", (unsigned int) buffree);
 		}
 
+        usleep(QUERY_DELAY);				/* let the plotter process some data */
 		/* we have available space! */
-		if(verbose) fprintf(stderr, "writing %u-sized chunk to serial port:\n", (unsigned int) fbufsize);
+		if(verbose) fprintf(stderr, "writing %u-sized chunk to serial port:\nbuf free: %u\n", (unsigned int) fbufsize, (unsigned int) buffree);
 
 		write(serial_fd, buffer, fbufsize);
+        usleep(fbufsize*10000);				/* let the plotter process some data */
 	}
 
 	/* shutdown plotter */
